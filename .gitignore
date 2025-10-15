@@ -1,0 +1,17 @@
+# Environment files
+venv/
+
+# Data files
+data/
+
+# Output files
+model_outputs/
+
+# Dependency files
+arbolta/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Python cache files
+__pycache__/
