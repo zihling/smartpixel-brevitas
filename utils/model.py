@@ -86,23 +86,6 @@ class QuantDenseModel(nn.Module, metaclass=ABCMeta):
         super(QuantDenseModel, self).__init__()
 
     # !: Define all layers in child classes
-        # self.fc1 = qnn.QuantLinear(
-        #     in_features=in_features,
-        #     out_features=dense_width,
-        #     bias=False,
-        #     **kwargs,
-        # )
-        # self.bn1 = qnn.BatchNorm1dToQuantScaleBias(dense_width)
-        # self.act1 = qnn.QuantReLU()
-        # self.fc2 = qnn.QuantLinear(
-        #     in_features=dense_width,
-        #     out_features=num_classes,
-        #     bias=True,
-        #     input_quant=Int8ActPerTensorFloat,      # <== specify again explicitly
-        #     weight_quant=Int8WeightPerTensorFloat,  # <== new module registered
-        #     input_bit_width=kwargs.get("input_bit_width", 8),
-        #     weight_bit_width=kwargs.get("weight_bit_width", 8),
-        # )
 
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() > 2:
@@ -126,34 +109,17 @@ class QuantDenseModel(nn.Module, metaclass=ABCMeta):
 class QuantDenseModelLarge(nn.Module):
     def __init__(
         self,
-        in_features,
-        dense_width=58,
-        logit_total_bits=4,
-        activation_total_bits=8,
+        in_features: int,
+        dense_width: int = 58,
+        num_classes: int = 12,
+        **kwargs,
     ):
         super().__init__()
 
-        def quant_block(in_f, out_f):
-            return nn.Sequential(
-                qnn.QuantLinear(
-                    in_features=in_f,
-                    out_features=out_f,
-                    bias=False,
-                    weight_bit_width=logit_total_bits,
-                ),
-                qnn.BatchNorm1dToQuantScaleBias(out_f),
-                qnn.QuantReLU(bit_width=activation_total_bits)
-            )
-
-        self.block1 = quant_block(in_features, dense_width)
-        self.block2 = quant_block(dense_width, dense_width)
-        self.block3 = quant_block(dense_width, dense_width)
-        self.output = qnn.QuantLinear(
-            in_features=dense_width,
-            out_features=NUM_CLASSES,
-            bias=True,
-            weight_bit_width=logit_total_bits,
-        )
+        @abstractmethod
+        def build_layers(self):
+            """Child classes define quantization blocks and output layer."""
+            pass
 
     def forward(self, x):
         x = self.block1(x)
@@ -161,6 +127,16 @@ class QuantDenseModelLarge(nn.Module):
         x = self.block3(x)
         x = self.output(x)
         return x
+    
+    @abstractmethod
+    def quant_weight(self) -> tuple[Tensor, Tensor]:
+        """Get quantized model weights."""
+        pass
+
+    @abstractmethod
+    def quant_input(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Quantize input tensor."""
+        pass
 
 # Integer-quantized model using Brevitas
 class IntQuantDenseModel(QuantDenseModel):
@@ -208,6 +184,67 @@ class IntQuantDenseModel(QuantDenseModel):
         with torch.no_grad():
             inp: IntQuantTensor = self.fc1.input_quant(x)
         return inp.int(), inp.scale
+    
+class IntQuantDenseModelLarge(QuantDenseModelLarge):
+    def __init__(
+        self,
+        in_features: int,
+        dense_width: int = 58,
+        logit_total_bits: int = 4,
+        activation_total_bits: int = 8,
+        num_classes: int = 12,
+    ):
+        super(IntQuantDenseModelLarge, self).__init__(
+            in_features=in_features,
+            dense_width=dense_width,
+            num_classes=num_classes,
+        )
+
+        def quant_block(in_f, out_f):
+            return nn.Sequential(
+                qnn.QuantLinear(
+                    in_features=in_f,
+                    out_features=out_f,
+                    bias=False,
+                    weight_quant=Int8WeightPerTensorFloat,
+                    weight_bit_width=logit_total_bits,
+                    input_quant=Int8ActPerTensorFloat,
+                    input_bit_width=activation_total_bits,
+                ),
+                nn.BatchNorm1d(out_f),
+                qnn.QuantReLU(bit_width=activation_total_bits)
+            )
+
+        self.block1 = quant_block(in_features, dense_width)
+        self.block2 = quant_block(dense_width, dense_width)
+        self.block3 = quant_block(dense_width, dense_width)
+        self.output = qnn.QuantLinear(
+            in_features=dense_width,
+            out_features=NUM_CLASSES,
+            bias=True,
+            weight_quant=Int8WeightPerTensorFloat,
+            weight_bit_width=logit_total_bits,
+            input_quant=Int8ActPerTensorFloat,
+            input_bit_width=activation_total_bits,
+        )
+
+    def quant_weight(self) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+        quant_weights = {}
+        model_scales = {}
+        with torch.no_grad():
+            for name, module in self.named_modules():
+                if isinstance(module, qnn.QuantLinear):
+                    w = module.quant_weight()
+                    quant_weights[name] = w.int()
+                    model_scales[name] = w.scale
+        return quant_weights, model_scales
+
+    def quant_input(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        with torch.no_grad():
+            first_fc = self.block1[0]
+            inp: IntQuantTensor = first_fc.input_quant(x)
+        return inp.int(), inp.scale
+
 
 # Floating-point-quantized model using Brevitas    
 class FloatQuantDenseModel(QuantDenseModel):
