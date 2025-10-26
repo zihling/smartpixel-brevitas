@@ -8,7 +8,7 @@ from brevitas.quant.experimental.float_base import (
 )
 import brevitas.nn as qnn
 from torch import Tensor
-from brevitas.quant.scaled_int import Int8ActPerTensorFloat, Int8WeightPerTensorFloat
+from brevitas.quant.scaled_int import Int8ActPerTensorFloat, Int8WeightPerTensorFloat, Int8Bias
 from brevitas.quant_tensor.float_quant_tensor import FloatQuantTensor
 from brevitas.quant_tensor.int_quant_tensor import IntQuantTensor
 from .minifloat import mf_to_raw, fp_mixin_factory
@@ -22,6 +22,7 @@ __all__ = [
     "QuantDenseModelLarge",
     "IntQuantDenseModel",
     "FloatQuantDenseModel",
+    "FloatQuantDenseModelLarge",
 ]
 
 # Original dense model in PyTorch
@@ -67,7 +68,7 @@ class DenseModelLarge(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.net(x)
 
-# TODO: add more quantized model for large model and mini-float supported model 
+# TODO: add more quantized model for mini-float supported model 
 # Quantized model using Brevitas
 class QuantDenseModel(nn.Module, metaclass=ABCMeta):
     """
@@ -169,6 +170,7 @@ class IntQuantDenseModel(QuantDenseModel):
             in_features=dense_width,
             out_features=num_classes,
             bias=True,
+            bias_quant=Int8Bias,
             weight_quant=Int8WeightPerTensorFloat,
             weight_bit_width=logit_total_bits,
             input_quant=Int8ActPerTensorFloat,
@@ -222,6 +224,7 @@ class IntQuantDenseModelLarge(QuantDenseModelLarge):
             in_features=dense_width,
             out_features=NUM_CLASSES,
             bias=True,
+            bias_quant=Int8Bias,
             weight_quant=Int8WeightPerTensorFloat,
             weight_bit_width=logit_total_bits,
             input_quant=Int8ActPerTensorFloat,
