@@ -11,7 +11,11 @@ from brevitas.quant.experimental.float_base import (
 )
 from numpy import ndarray
 from torch import FloatTensor, IntTensor
-
+# from brevitas.quant.solver.bias_quant_solver import BiasQuantSolver
+# from brevitas.proxy.bias_float_quant_proxy_from_injector import (
+#     BiasFloatQuantProxyFromInjector,
+# )
+# TODO: Find a version of Brevitas that includes the above commented imports and define bias quantizers
 __all__ = ["mf_to_raw", "raw_to_mf", "fp_mixin_factory", "MinifloatQuantizer"]
 
 
@@ -83,9 +87,13 @@ def raw_to_mf(
     return sign * man * xp.exp2(exp)
 
 
+# class FloatBiasBase(FloatBase, BiasQuantSolver):
+#     proxy_class = BiasFloatQuantProxyFromInjector
+
+
 # Helper for creating custom minifloat quantizers
 def fp_mixin_factory(
-    exponent_bit_width: int, mantissa_bit_width: int, base_class: FloatBase
+    exponent_bit_width: int, mantissa_bit_width: int, base_class: FloatBase, bias: bool = False
 ):
     bit_width = 1 + exponent_bit_width + mantissa_bit_width
     name = f"Fp{bit_width}e{exponent_bit_width}m{mantissa_bit_width}"
@@ -101,14 +109,19 @@ def fp_mixin_factory(
         },
     )
 
-    if base_class is FloatActBase:
+    if base_class is FloatActBase and not bias:
         class_name = name + "Act"
+        class_tuple = (mixin, base_class)
+    elif base_class is FloatActBase and bias:
+        class_name = name + "Bias"
+        class_tuple = (mixin, base_class)
     elif base_class is FloatWeightBase:
         class_name = name + "Weight"
+        class_tuple = (mixin, base_class)
     else:
         raise TypeError("Unsupported Float Base")
 
-    return type(class_name, (mixin, base_class), {})
+    return type(class_name, class_tuple, {})
 
 
 class MinifloatQuantizer(nn.Module):

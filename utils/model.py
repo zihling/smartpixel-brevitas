@@ -265,12 +265,17 @@ class FloatQuantDenseModel(QuantDenseModel):
         weight_exponent_bit_width: int = 4,
         weight_mantissa_bit_width: int = 3,
     ):
+        activation_total_bits = 1 + input_exponent_bit_width + input_mantissa_bit_width
+        logit_total_bits = 1 + weight_exponent_bit_width + weight_mantissa_bit_width
         # Build custom minifloat quantizers
         input_quant = fp_mixin_factory(
             input_exponent_bit_width, input_mantissa_bit_width, FloatActBase
         )
         weight_quant = fp_mixin_factory(
             weight_exponent_bit_width, weight_mantissa_bit_width, FloatWeightBase
+        )
+        bias_quant = fp_mixin_factory(
+            input_exponent_bit_width, input_mantissa_bit_width, FloatActBase, bias=True
         )
 
         super(FloatQuantDenseModel, self).__init__(
@@ -279,6 +284,28 @@ class FloatQuantDenseModel(QuantDenseModel):
             num_classes=num_classes,
             input_quant=input_quant,
             weight_quant=weight_quant,
+        )
+
+        self.fc1 = qnn.QuantLinear(
+            in_features=in_features,
+            out_features=dense_width,
+            bias=False,
+            weight_quant=weight_quant,
+            weight_bit_width=logit_total_bits,
+            input_quant=input_quant,
+            input_bit_width=activation_total_bits,
+        )
+        self.bn1 = nn.BatchNorm1d(dense_width)
+        self.act1 = qnn.QuantReLU(bit_width=activation_total_bits)
+        self.fc2 = qnn.QuantLinear(
+            in_features=dense_width,
+            out_features=num_classes,
+            bias=False,
+            # bias_quant=bias_quant,
+            weight_quant=weight_quant,
+            weight_bit_width=logit_total_bits,
+            input_quant=input_quant,
+            input_bit_width=activation_total_bits,
         )
 
     def quant_weight(self, return_raw: bool = False) -> tuple[Tensor, Tensor]:
