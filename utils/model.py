@@ -339,3 +339,79 @@ class FloatQuantDenseModel(QuantDenseModel):
             ).type(torch.uint8)
 
         return out, inputs.scale
+    
+class FloatQuantDenseModelLarge(QuantDenseModelLarge):
+    def __init__(
+        self,
+        in_features: int,
+        dense_width: int = 58,
+        num_classes: int = 12,
+        input_exponent_bit_width: int = 4,
+        input_mantissa_bit_width: int = 3,
+        weight_exponent_bit_width: int = 4,
+        weight_mantissa_bit_width: int = 3,
+    ):
+        activation_total_bits = 1 + input_exponent_bit_width + input_mantissa_bit_width
+        logit_total_bits = 1 + weight_exponent_bit_width + weight_mantissa_bit_width
+        # Build custom minifloat quantizers
+        input_quant = fp_mixin_factory(
+            input_exponent_bit_width, input_mantissa_bit_width, FloatActBase
+        )
+        weight_quant = fp_mixin_factory(
+            weight_exponent_bit_width, weight_mantissa_bit_width, FloatWeightBase
+        )
+        bias_quant = fp_mixin_factory(
+            input_exponent_bit_width, input_mantissa_bit_width, FloatActBase, bias=True
+        )
+
+        super(FloatQuantDenseModelLarge, self).__init__(
+            in_features=in_features,
+            dense_width=dense_width,
+            num_classes=num_classes,
+        )
+
+        def quant_block(in_f, out_f):
+            return nn.Sequential(
+                qnn.QuantLinear(
+                    in_features=in_f,
+                    out_features=out_f,
+                    bias=False,
+                    weight_quant=weight_quant,
+                    weight_bit_width=logit_total_bits,
+                    input_quant=input_quant,
+                    input_bit_width=activation_total_bits,
+                ),
+                nn.BatchNorm1d(out_f),
+                qnn.QuantReLU(bit_width=activation_total_bits)
+            )
+
+        self.block1 = quant_block(in_features, dense_width)
+        self.block2 = quant_block(dense_width, dense_width)
+        self.block3 = quant_block(dense_width, dense_width)
+        self.output = qnn.QuantLinear(
+            in_features=dense_width,
+            out_features=NUM_CLASSES,
+            bias=False,
+            # bias_quant=Int8Bias,
+            weight_quant=weight_quant,
+            weight_bit_width=logit_total_bits,
+            input_quant=input_quant,
+            input_bit_width=activation_total_bits,
+        )
+
+    def quant_weight(self) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+        quant_weights = {}
+        model_scales = {}
+        with torch.no_grad():
+            for name, module in self.named_modules():
+                if isinstance(module, qnn.QuantLinear):
+                    w = module.quant_weight()
+                    quant_weights[name] = w.int()
+                    model_scales[name] = w.scale
+        return quant_weights, model_scales
+
+    def quant_input(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        with torch.no_grad():
+            first_fc = self.block1[0]
+            inp: IntQuantTensor = first_fc.input_quant(x)
+        return inp.int(), inp.scale
