@@ -259,7 +259,7 @@ def evaluate(model, loader, device):
 
 def main():
     # Hyperparameters
-    batch_size = 512 # 512 is the original setting
+    batch_size = 256 # 512 is the original setting
     total_iters = 1000000
     eval_interval = 20000
     initial_lr = 1e-3
