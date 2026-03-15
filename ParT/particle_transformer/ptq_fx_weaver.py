@@ -33,7 +33,7 @@ def parse_args():
 
     parser.add_argument(
         "--ckpt",
-        default="./models/ParT_full.pt",
+        default="./training/JetClass/Pythia/full/ParT/20260309-194205_example_ParticleTransformer_ranger_lr0.001_batch512/net_best_epoch_state.pt",
     )
 
     parser.add_argument(
@@ -41,10 +41,10 @@ def parse_args():
         default="./models/ParT_full_w8a8_ptq.pt",
     )
 
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--calib-batches", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--calib-batches", type=int, default=512)
 
-    parser.add_argument("--gpus", default="0")
+    parser.add_argument("--gpus", default="1, 2, 3")
 
     return parser.parse_args()
     
@@ -164,9 +164,35 @@ def disable_packed_in_proj(m):
         if hasattr(mod, "multi_head_attention") and hasattr(mod.multi_head_attention, "packed_in_proj"):
             mod.multi_head_attention.packed_in_proj = False
 
+def build_ffn_only_blacklist(model):
+    """
+    Only keep the FFN layers quantized, since those are the most important for performance and the most robust to quantization. This allows us to get good accuracy with PTQ.
+    """
+    blacklist = []
+
+    for name, mod in model.named_modules():
+        # Only allow transformer FFN's fc1/fc2 to be quantized
+        keep = (
+            name.endswith(".fc1") or
+            name.endswith(".fc2")
+        )
+
+        # These types are the objects that layerwise_quantize might replace
+        quantizable = isinstance(mod, (
+            nn.Linear,
+            nn.Conv1d,
+            nn.Conv2d,
+            nn.MultiheadAttention,
+        ))
+
+        if quantizable and not keep:
+            blacklist.append(name)
+
+    return blacklist
+
 
 @torch.no_grad()
-def calibrate(qmodel, loader, device, max_batches=64):
+def calibrate(qmodel, loader, device, max_batches=512):
     qmodel.eval()
     for i, batch in enumerate(loader):
         if i >= max_batches:
@@ -204,7 +230,7 @@ def main():
     print(model)
     model = load_checkpoint(model, args.ckpt)
     model = model.to(device).eval()
-    # fp_model = copy.deepcopy(model)
+    fp_model = copy.deepcopy(model)
     print("float model built")
 
     # Brevitas PTQ
@@ -215,9 +241,25 @@ def main():
     print("running quantize")
     custom_layer_map = copy.deepcopy(LAYERWISE_COMPUTE_LAYER_MAP)
     custom_layer_map[nn.MultiheadAttention] = None # TODO: Don't quantize MultiheadAttention, as it causes issues with residual alignment in this model. This is a temporary workaround until we can fix the underlying issue.
-    qmodel = layerwise_quantize(fx_model, compute_layer_map=custom_layer_map).to(device).eval()
-    # disable_packed_in_proj(qmodel)
+    name_blacklist = build_ffn_only_blacklist(fx_model)
+    print("num blacklisted modules:", len(name_blacklist))
+    for n in name_blacklist:
+        print("blacklist:", n)
+    qmodel = layerwise_quantize(fx_model, compute_layer_map=custom_layer_map, name_blacklist=name_blacklist).to(device).eval()
 
+    print("=== sanity check qmodel types ===")
+    for name, mod in qmodel.named_modules():
+        if any(key in name for key in [
+            "embed.embed",
+            "pair_embed.embed",
+            "blocks.0.fc1",
+            "blocks.0.fc2",
+            "blocks.0.attn",
+            "cls_blocks.0.fc1",
+            "cls_blocks.0.fc2",
+            "fc.0",
+        ]):
+            print(name, "->", type(mod))
     print("module counts:")
     print("float :", count_modules(model))
     print("quant :", count_modules(qmodel))
